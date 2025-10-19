@@ -3,24 +3,25 @@
   "version": "1.0.0",
   "private": true,
   "license": "MIT",
-  "type": "module",
   "scripts": {
     "build": "hardhat compile",
     "test": "hardhat test",
     "lint": "echo 'Add solhint/eslint if desired'",
     "deploy:kasplextest": "hardhat run scripts/deploy.ts --network kasplexTest",
-    "release": "hardhat run scripts/deploy.ts --network kasplexTest"
+    "release": "hardhat run scripts/deploy.ts --network kasplexTest",
+    "heroku-postbuild": "npm run build"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.2",
     "@openzeppelin/contracts-upgradeable": "^5.0.2",
     "@openzeppelin/hardhat-upgrades": "^3.1.0",
-    "dotenv": "^16.4.5"
-  },
-  "devDependencies": {
+    "dotenv": "^16.4.5",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "hardhat": "^2.22.9",
     "typescript": "^5.4.5",
     "ts-node": "^10.9.2"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
