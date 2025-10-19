@@ -43,7 +43,21 @@ contract NFTCollection is ERC721, ERC721URIStorage, ERC2981, Ownable {
     function _baseURI() internal view override returns (string memory) {
         return baseURI;
     }
-function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC2981, ERC721URIStorage) returns (bool) {
+function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC2981, ERC721URIStorage)
+        returns (bool)
+    {
         return super.supportsInterface(interfaceId);
+    }
+
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return ERC721URIStorage.tokenURI(tokenId);
     }
 }
