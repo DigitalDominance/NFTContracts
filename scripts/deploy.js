@@ -32,15 +32,15 @@ async function main() {
   await setTx.wait();
   console.log("StakingPool.marketplace set");
 
-  // Treasury (simple vault) - optional, you can point marketplace.treasury to an existing multisig instead
+  // Treasury (simple vault) - optional
   const Treasury = await ethers.getContractFactory("Treasury");
   const treasury = await Treasury.deploy(treasuryAddress);
   await treasury.waitForDeployment();
   console.log("Treasury:", await treasury.getAddress());
 
-  // Factory
+  // Factory (now needs owner + treasury)
   const Factory = await ethers.getContractFactory("CollectionFactory");
-  const factory = await Factory.deploy(deployer.address);
+  const factory = await Factory.deploy(deployer.address, treasuryAddress);
   await factory.waitForDeployment();
   console.log("CollectionFactory:", await factory.getAddress());
 
