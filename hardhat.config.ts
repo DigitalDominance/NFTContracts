@@ -12,7 +12,10 @@ const gasPriceGwei = Number(process.env.GAS_PRICE_GWEI || 2000);
 const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.24",
-    settings: { optimizer: { enabled: true, runs: 200 } }
+    settings: {
+      optimizer: { enabled: true, runs: 200 },
+      viaIR: true
+    }
   },
   networks: {
     kasplexTest: {
