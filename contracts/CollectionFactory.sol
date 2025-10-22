@@ -1,69 +1,62 @@
-import "./StakingPool.sol";
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {NFTCollection} from "./NFTCollection.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {NFTCollection} from "./NFTCollection.sol";
+import {StakingPool} from "./StakingPool.sol";
 
-/**
- * @title CollectionFactory
- * @dev Deploys new NFTCollection contracts with configurable mint params.
- * - Charges a flat **5 KAS** deploy fee that is forwarded to `treasury`.
- */
 contract CollectionFactory is Ownable {
-    mapping(address => address) public stakingPoolOf;
+    uint256 public constant DEPLOY_FEE = 5 ether; // 5 KAS (18 decimals)
+    address public treasury;
 
-    function getPool(address collection) public view returns (address) { return stakingPoolOf[collection]; }
+    // collection => pool
+    mapping(address => address) public stakingPoolOf;
 
     event CollectionDeployed(
         address indexed collection,
-        address indexed owner, address indexed stakingPool,
-        string  name,
-        string  symbol,
+        address indexed owner,
+        address indexed stakingPool,
+        string name,
+        string symbol,
         address royaltyReceiver,
-        uint96  royaltyBps,
+        uint96 royaltyBps,
         uint256 mintPrice,
         uint256 maxPerWallet,
         uint256 maxSupply,
-        string  baseURI
+        string baseURI
     );
-
-    address public immutable treasury;
-    uint256 public constant DEPLOY_FEE = 5 ether; // 5 KAS (18 decimals)
 
     constructor(address owner_, address treasury_) Ownable(owner_) {
         require(treasury_ != address(0), "treasury=0");
         treasury = treasury_;
     }
 
-    /**
-     * @notice Deploy a new NFTCollection.
-     * @param name_           Collection name
-     * @param symbol_         Collection symbol
-     * @param royaltyReceiver Default ERC-2981 royalty receiver
-     * @param royaltyBps      Default royalty (basis points)
-     * @param mintPrice       Public mint price (wei)
-     * @param maxPerWallet    Max mintable per wallet
-     * @param maxSupply       Total supply cap (e.g., number of images)
-     * @param baseURI         Base URI prefix (e.g., https://.../ or ipfs://.../)
-     */
+    function setTreasury(address t) external onlyOwner {
+        require(t != address(0), "t=0");
+        treasury = t;
+    }
+
+    function getPool(address collection) external view returns (address) {
+        return stakingPoolOf[collection];
+    }
+
     function deployCollection(
         string calldata name_,
         string calldata symbol_,
+        string calldata baseURI,
         address royaltyReceiver,
         uint96  royaltyBps,
         uint256 mintPrice,
         uint256 maxPerWallet,
-        uint256 maxSupply,
-        string calldata baseURI
-    ) external payable onlyOwner returns (address addr) {
+        uint256 maxSupply
+    ) external payable returns (address addr) {
         require(msg.value == DEPLOY_FEE, "fee=5 KAS");
-        address _pool = address(new StakingPool(addr));
-        stakingPoolOf[addr] = _pool;
-        // forward fee to treasury
-        (bool ok, ) = payable(treasury).call{value: msg.value}("");
-        require(ok, "fee xfer failed");
+        require(bytes(name_).length > 0 && bytes(symbol_).length > 0, "name/symbol empty");
+        require(maxSupply > 0, "maxSupply=0");
+        require(royaltyBps <= 10_000, "royalty>100%");
 
+        // 1) Deploy collection
         NFTCollection c = new NFTCollection(
             name_,
             symbol_,
@@ -75,13 +68,23 @@ contract CollectionFactory is Ownable {
             baseURI
         );
 
-        // Factory owner remains collection owner by default; transfer to sender (factory owner)
+        // 2) Transfer ownership to deployer
         c.transferOwnership(msg.sender);
         addr = address(c);
 
+        // 3) Deploy per-collection staking pool (non-upgradeable)
+        address pool = address(new StakingPool(addr));
+        stakingPoolOf[addr] = pool;
+
+        // 4) Forward the fixed fee to treasury
+        (bool ok, ) = payable(treasury).call{value: msg.value}("");
+        require(ok, "fee xfer failed");
+
+        // 5) Emit event
         emit CollectionDeployed(
             addr,
-            msg.sender, _pool, 
+            msg.sender,
+            pool,
             name_,
             symbol_,
             royaltyReceiver,
@@ -91,5 +94,7 @@ contract CollectionFactory is Ownable {
             maxSupply,
             baseURI
         );
+
+        return addr;
     }
 }
