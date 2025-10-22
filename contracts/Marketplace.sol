@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface ICollectionFactory { function getPool(address collection) external view returns (address); }
 pragma solidity ^0.8.24;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -16,6 +18,17 @@ import {IERC2981} from "@openzeppelin/contracts/interfaces/IERC2981.sol";
  * Supports native payments (address(0)) and allow-listed ERC20 tokens.
  */
 contract Marketplace is Initializable, UUPSUpgradeable, OwnableUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable {
+
+    event FactoryUpdated(address indexed factory);
+
+    function setFactory(address _factory) external onlyOwner {
+        require(_factory != address(0), "factory=0");
+        factory = _factory;
+        emit FactoryUpdated(_factory);
+    }
+
+    address public factory;
+
     uint256 public constant BPS_DENOM = 10_000;
 
     struct Listing {
@@ -125,12 +138,6 @@ contract Marketplace is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     function cancel(address nft, uint256 tokenId) external whenNotPaused nonReentrant {
         Listing memory L = listings[nft][tokenId];
         if (!L.active) revert NotListed();
-        if (L.seller != msg.sender) revert NotOwner();
-        delete listings[nft][tokenId];
-        emit Cancelled(nft, tokenId, msg.sender);
-    }
-
-    function buy(address nft, uint256 tokenId) external payable whenNotPaused nonReentrant {
         Listing memory L = listings[nft][tokenId];
         if (!L.active) revert NotListed();
 
@@ -159,8 +166,18 @@ contract Marketplace is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
                 (bool ok1, ) = payable(royaltyRecipient).call{value: royaltyAmount}("");
                 if (!ok1) revert TransferFailed();
             }
-            // 2. staking fee -> stakingPool.notifyFee(native)
-            (bool ok2, ) = stakingPool.call{value: stakingFee}(abi.encodeWithSignature("notifyFee(address,uint256)", address(0), stakingFee));
+            // 2. staking fee -> pool.notifyFee(token)
+            {
+                address _pool = factory != address(0) ? ICollectionFactory(factory).getPool(nft) : address(0);
+                if (_pool == address(0)) { _pool = stakingPool; }
+                if (_pool != address(0) && stakingFee > 0) {
+                    // send tokens to pool first
+                    require(token.transfer(_pool, stakingFee), "pool erc20 xfer failed");
+                    (bool ok2, ) = _pool.call(abi.encodeWithSignature("notifyFee(address,uint256)", address(token), stakingFee));
+                    if (!ok2) revert TransferFailed();
+                }
+            }
+
             if (!ok2) revert TransferFailed();
             // 3. platform fee -> treasury
             (bool ok3, ) = payable(treasury).call{value: platformFee}("");
@@ -196,6 +213,14 @@ contract Marketplace is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         // If collection supports ERC2981, query it; else 0
         try IERC2981(nft).royaltyInfo(tokenId, price) returns (address rec, uint256 amt) {
             // cap royalty at royaltyCapBP
+            uint256 cap = (price * royaltyCapBP) / BPS_DENOM;
+            amount = amt > cap ? cap : amt;
+            receiver = rec;
+        } catch {
+            amount = 0;
+            receiver = address(0);
+        }
+    }y at royaltyCapBP
             uint256 cap = (price * royaltyCapBP) / BPS_DENOM;
             amount = amt > cap ? cap : amt;
             receiver = rec;

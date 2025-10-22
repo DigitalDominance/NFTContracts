@@ -1,170 +1,169 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 /**
- * @title StakingPool (Upgradeable)
- * @dev Stake ERC721 tokens. Rewards distributed from marketplace fees via notifyFee (native or ERC20).
- * Reward model: 1 share per staked NFT, accRewardPerShare scaled by 1e18. Per currency accounting.
+ * @title StakingPool (collection-specific)
+ * @notice 1 staked NFT = 1 share. Rewards are distributed per-share via accPerShare.
+ *         This pool is bound to a single ERC721 collection (COLLECTION).
+ *         Native KAS rewards use currency = address(0).
  */
-contract StakingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
-    // marketplace that is allowed to notify fees
-    address public marketplace;
+contract StakingPool is IERC721Receiver, ReentrancyGuard {
+    address public immutable COLLECTION;
 
-    // total shares = count of staked NFTs
+    // --- shares ---
     uint256 public totalShares;
+    mapping(address => uint256) public balanceOf; // shares per user
+    mapping(uint256 => address) public stakerOf;  // tokenId => original owner
+    mapping(uint256 => bool) public isStaked;     // tokenId staked flag
 
-    // staked[nft][tokenId] => staker
-    mapping(address => mapping(uint256 => address)) public stakedBy;
-
-    // user balances (number of NFTs staked)
-    mapping(address => uint256) public balanceOf;
-
-    // reward accounting per currency (address(0) = native)
-    struct RewardState {
-        uint256 accPerShare; // scaled by 1e18
-    }
-    mapping(address => RewardState) public rewardState; // currency => state
-
-    // user reward debt per currency
+    // --- rewards ---
+    struct RewardState { uint256 accPerShare; } // scaled by 1e18
+    mapping(address => RewardState) public rewardState;           // currency => state
     mapping(address => mapping(address => uint256)) public rewardDebt; // user => currency => debt
+    mapping(address => uint256) public feeBuffer;                 // currency => buffered when totalShares==0
 
-    // pending buffer for currencies if no stakers yet
-    mapping(address => uint256) public feeBuffer; // currency => amount
+    uint256 private constant ACC = 1e18;
 
-    event Staked(address indexed user, address indexed nft, uint256 indexed tokenId);
-    event Unstaked(address indexed user, address indexed nft, uint256 indexed tokenId);
+    event Staked(address indexed user, uint256 indexed tokenId);
+    event Unstaked(address indexed user, uint256 indexed tokenId);
     event Claimed(address indexed user, address indexed currency, uint256 amount);
     event FeeNotified(address indexed currency, uint256 amount, uint256 accPerShare);
-    event MarketplaceUpdated(address indexed oldM, address indexed newM);
+    event BufferFlushed(address indexed currency, uint256 amount, uint256 accPerShareAfter);
 
-    modifier onlyMarketplace() {
-        require(msg.sender == marketplace, "not marketplace");
-        _;
+    constructor(address collection_) {
+        require(collection_ != address(0), "collection=0");
+        COLLECTION = collection_;
     }
 
-    function initialize(address owner_) public initializer {
-        __Ownable_init(owner_);
-        __UUPSUpgradeable_init();
-        __ReentrancyGuard_init();
-        __Pausable_init();
+    // ---- views ----
+    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
     }
 
-    function _authorizeUpgrade(address) internal override onlyOwner {}
-
-    function setMarketplace(address m) external onlyOwner {
-        emit MarketplaceUpdated(marketplace, m);
-        marketplace = m;
+    function pending(address user, address currency) public view returns (uint256) {
+        uint256 shares = balanceOf[user];
+        if (shares == 0) return 0;
+        uint256 acc = rewardState[currency].accPerShare;
+        // NOTE: feeBuffer is not auto-included to keep view pure; call flushBuffer for exactness
+        uint256 debt = rewardDebt[user][currency];
+        uint256 gross = (shares * acc) / ACC;
+        return gross > debt ? gross - debt : 0;
     }
 
-    function pause() external onlyOwner { _pause(); }
-    function unpause() external onlyOwner { _unpause(); }
-
-    function isStaked(address nft, uint256 tokenId) public view returns (bool) {
-        return stakedBy[nft][tokenId] != address(0);
+    // ---- internal helpers ----
+    function _settle(address user, address currency) internal returns (uint256 claimed) {
+        uint256 p = pending(user, currency);
+        if (p > 0) {
+            rewardDebt[user][currency] += p;
+            if (currency == address(0)) {
+                (bool ok, ) = payable(user).call{value: p}("");
+                require(ok, "native xfer failed");
+            } else {
+                // ERC20 path (optional extension): assume tokens were transferred to this pool
+                (bool ok, bytes memory data) = currency.call(abi.encodeWithSignature("transfer(address,uint256)", user, p));
+                require(ok && (data.length == 0 || abi.decode(data, (bool))), "erc20 xfer failed");
+            }
+            emit Claimed(user, currency, p);
+            return p;
+        }
+        return 0;
     }
 
-    function stake(address nft, uint256 tokenId) external whenNotPaused nonReentrant {
-        IERC721(nft).transferFrom(msg.sender, address(this), tokenId);
-        require(stakedBy[nft][tokenId] == address(0), "already staked");
-        stakedBy[nft][tokenId] = msg.sender;
+    function _updateDebt(address user) internal {
+        // sync user debt across the one default currency (native) for now
+        address currency = address(0);
+        uint256 shares = balanceOf[user];
+        rewardDebt[user][currency] = (shares * rewardState[currency].accPerShare) / ACC;
+    }
+
+    // ---- user actions ----
+    function stake(uint256 tokenId) external nonReentrant {
+        require(!isStaked[tokenId], "already staked");
+        // settle current rewards for user before increasing shares
+        _settle(msg.sender, address(0));
+
+        // pull NFT
+        IERC721(COLLECTION).safeTransferFrom(msg.sender, address(this), tokenId);
+        isStaked[tokenId] = true;
+        stakerOf[tokenId] = msg.sender;
+
+        // increment shares
         balanceOf[msg.sender] += 1;
         totalShares += 1;
-        _updateRewardsOnChange(msg.sender);
-        emit Staked(msg.sender, nft, tokenId);
+
+        // update reward debt
+        _updateDebt(msg.sender);
+
+        emit Staked(msg.sender, tokenId);
     }
 
-    function unstake(address nft, uint256 tokenId) external whenNotPaused nonReentrant {
-        require(stakedBy[nft][tokenId] == msg.sender, "not staker");
-        _claimAll(msg.sender);
-        stakedBy[nft][tokenId] = address(0);
+    function unstake(uint256 tokenId) external nonReentrant {
+        require(isStaked[tokenId], "not staked");
+        address owner_ = stakerOf[tokenId];
+        require(owner_ == msg.sender, "not staker");
+
+        // claim all native before reducing shares
+        _settle(msg.sender, address(0));
+
+        // reduce shares
         balanceOf[msg.sender] -= 1;
         totalShares -= 1;
-        IERC721(nft).transferFrom(address(this), msg.sender, tokenId);
-        _updateRewardsOnChange(msg.sender);
-        emit Unstaked(msg.sender, nft, tokenId);
+
+        // return NFT
+        isStaked[tokenId] = false;
+        stakerOf[tokenId] = address(0);
+        IERC721(COLLECTION).safeTransferFrom(address(this), msg.sender, tokenId);
+
+        // update reward debt
+        _updateDebt(msg.sender);
+
+        emit Unstaked(msg.sender, tokenId);
     }
 
-    // Marketplace notifies fees; currency = address(0) for native or ERC20 token address
-    function notifyFee(address currency, uint256 amount) external payable onlyMarketplace nonReentrant {
+    function claimAll() external nonReentrant {
+        _settle(msg.sender, address(0));
+        _updateDebt(msg.sender);
+    }
+
+    // ---- fee notify ----
+    function notifyFee(address currency, uint256 amount) external payable nonReentrant {
         if (currency == address(0)) {
-            require(msg.value == amount, "native amount mismatch");
+            require(msg.value == amount, "bad msg.value");
         } else {
-            require(msg.value == 0, "no native");
-            require(IERC20(currency).transferFrom(msg.sender, address(this), amount), "fee xfer fail");
+            // For ERC20 fees, the caller should transfer tokens to this contract before calling notifyFee,
+            // or you can extend with permit/pull pattern.
         }
 
         if (totalShares == 0) {
-            // buffer until someone stakes
-            if (currency == address(0)) {
-                feeBuffer[address(0)] += amount;
-            } else {
-                feeBuffer[currency] += amount;
-            }
+            feeBuffer[currency] += amount;
             emit FeeNotified(currency, amount, rewardState[currency].accPerShare);
             return;
         }
 
-        uint256 scaled = (amount * 1e18) / totalShares;
-        rewardState[currency].accPerShare += scaled;
-        emit FeeNotified(currency, amount, rewardState[currency].accPerShare);
+        // distribute immediately
+        RewardState storage rs = rewardState[currency];
+        rs.accPerShare += (amount * ACC) / totalShares;
+        emit FeeNotified(currency, amount, rs.accPerShare);
     }
 
-    function claimAll() external nonReentrant {
-        _claimAll(msg.sender);
-    }
-
-    function _claimAll(address user) internal {
-        // claim native
-        _claim(user, address(0));
-        // NOTE: If you allow ERC20 currencies, you may loop a known list managed by owner.
-        // For simplicity, only native is claimed here; extend with allowlist if needed.
-    }
-
-    function _claim(address user, address currency) internal {
-        uint256 pending = _pending(user, currency);
-        if (pending > 0) {
-            if (currency == address(0)) {
-                (bool ok, ) = payable(user).call{value: pending}("");
-                require(ok, "claim native failed");
-            } else {
-                require(IERC20(currency).transfer(user, pending), "claim erc20 failed");
-            }
-            rewardDebt[user][currency] = rewardState[currency].accPerShare * balanceOf[user] / 1e18;
-            emit Claimed(user, currency, pending);
-        } else {
-            rewardDebt[user][currency] = rewardState[currency].accPerShare * balanceOf[user] / 1e18;
-        }
-    }
-
-    function _pending(address user, address currency) internal view returns (uint256) {
-        uint256 acc = rewardState[currency].accPerShare;
-        uint256 shares = balanceOf[user];
-        uint256 debt = rewardDebt[user][currency];
-        if (shares == 0) return 0;
-        return (acc * shares / 1e18) - debt;
-    }
-
-    function _updateRewardsOnChange(address user) internal {
-        // reset rewardDebt to current accPerShare
-        rewardDebt[user][address(0)] = rewardState[address(0)].accPerShare * balanceOf[user] / 1e18;
-    }
-
-    // Helper to distribute buffered fees when first stake happens
     function flushBuffer(address currency) external nonReentrant {
-        uint256 amount = feeBuffer[currency];
-        require(amount > 0, "no buffer");
-        require(totalShares > 0, "no shares");
+        uint256 buf = feeBuffer[currency];
+        if (buf == 0) return;
         feeBuffer[currency] = 0;
-        uint256 scaled = (amount * 1e18) / totalShares;
-        rewardState[currency].accPerShare += scaled;
-        emit FeeNotified(currency, amount, rewardState[currency].accPerShare);
+        if (totalShares == 0) {
+            // re-buffer if still no stakers
+            feeBuffer[currency] = buf;
+            return;
+        }
+        RewardState storage rs = rewardState[currency];
+        rs.accPerShare += (buf * ACC) / totalShares;
+        emit BufferFlushed(currency, buf, rs.accPerShare);
     }
+
+    // receive native
+    receive() external payable {}
 }

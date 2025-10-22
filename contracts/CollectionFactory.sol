@@ -1,3 +1,4 @@
+import "./StakingPool.sol";
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -10,9 +11,13 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  * - Charges a flat **5 KAS** deploy fee that is forwarded to `treasury`.
  */
 contract CollectionFactory is Ownable {
+    mapping(address => address) public stakingPoolOf;
+
+    function getPool(address collection) public view returns (address) { return stakingPoolOf[collection]; }
+
     event CollectionDeployed(
         address indexed collection,
-        address indexed owner,
+        address indexed owner, address indexed stakingPool,
         string  name,
         string  symbol,
         address royaltyReceiver,
@@ -53,6 +58,8 @@ contract CollectionFactory is Ownable {
         string calldata baseURI
     ) external payable onlyOwner returns (address addr) {
         require(msg.value == DEPLOY_FEE, "fee=5 KAS");
+        address _pool = address(new StakingPool(addr));
+        stakingPoolOf[addr] = _pool;
         // forward fee to treasury
         (bool ok, ) = payable(treasury).call{value: msg.value}("");
         require(ok, "fee xfer failed");
