@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 interface ICollectionLike is IERC721 {}
 
@@ -45,7 +44,6 @@ contract StakingPool is ReentrancyGuard {
 
     // --- Actions ---
     function stake(uint256 tokenId) external nonReentrant {
-        // transfer NFT to the pool
         ICollectionLike(COLLECTION).safeTransferFrom(msg.sender, address(this), tokenId);
         require(stakedBy[tokenId] == address(0), "already staked");
         _accrue(msg.sender);
@@ -65,7 +63,6 @@ contract StakingPool is ReentrancyGuard {
         balanceOf[msg.sender] -= 1;
         totalShares -= 1;
 
-        // return NFT
         ICollectionLike(COLLECTION).safeTransferFrom(address(this), msg.sender, tokenId);
         emit Unstaked(msg.sender, tokenId);
     }
@@ -81,20 +78,16 @@ contract StakingPool is ReentrancyGuard {
         }
     }
 
-    // Marketplace calls this with value in native KAS
     function notifyFee(uint256 amount) external payable nonReentrant {
         require(msg.value == amount, "value!=amount");
         if (totalShares == 0) {
-            // no stakers yet: buffer inside contract (accPerShare unchanged)
             return;
         }
         accPerShare += (amount * 1e18) / totalShares;
         emit FeeNotified(amount, accPerShare);
     }
 
-    // internal
     function _accrue(address user) internal {
-        // bring debt to current accPerShare
         uint256 shares = balanceOf[user];
         uint256 entitled = (shares * accPerShare) / 1e18;
         uint256 debt = rewardDebt[user];
@@ -103,6 +96,5 @@ contract StakingPool is ReentrancyGuard {
         }
     }
 
-    // receive KAS (e.g., refunds)
     receive() external payable {}
 }

@@ -61,9 +61,9 @@ contract NFTCollection is ERC721, ERC2981, Ownable, ReentrancyGuard {
         emit MintPriceSet(_mintPrice);
     }
 
-    function setBaseURI(string calldata _baseURI) external onlyOwner {
-        baseURI_ = _baseURI;
-        emit BaseURISet(_baseURI);
+    function setBaseURI(string calldata newBaseURI) external onlyOwner {
+        baseURI_ = newBaseURI;
+        emit BaseURISet(newBaseURI);
     }
 
     function mint(uint256 quantity) external payable nonReentrant {

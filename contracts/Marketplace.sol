@@ -21,11 +21,10 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
     struct Listing {
         address seller;
         uint256 price;
-        address paymentToken; // address(0) for KAS
+        address paymentToken;
         bool active;
     }
 
-    // fees (bps)
     uint256 public platformFeeBP;
     uint256 public stakingFeeBP;
     uint256 public royaltyCapBP;
@@ -34,7 +33,7 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
     IFactory public factory;
 
     mapping(address => mapping(uint256 => Listing)) public listings;
-    mapping(address => bool) public allowedPaymentToken; // address(0) allowed by default
+    mapping(address => bool) public allowedPaymentToken;
 
     event Listed(address indexed nft, uint256 indexed tokenId, address indexed seller, uint256 price, address paymentToken);
     event Cancelled(address indexed nft, uint256 indexed tokenId, address indexed seller);
@@ -56,10 +55,9 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
         platformFeeBP = platformFeeBP_;
         stakingFeeBP = stakingFeeBP_;
         royaltyCapBP = royaltyCapBP_;
-        allowedPaymentToken[address(0)] = true; // allow KAS by default
+        allowedPaymentToken[address(0)] = true;
     }
 
-    // Admin
     function setFactory(address _factory) external onlyOwner {
         factory = IFactory(_factory);
     }
@@ -75,7 +73,6 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
-    // Listings
     function list(address nft, uint256 tokenId, uint256 price, address paymentToken) external whenNotPaused nonReentrant {
         require(price > 0, "price=0");
         require(allowedPaymentToken[paymentToken], "payment not allowed");
@@ -83,7 +80,6 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
         require(c.ownerOf(tokenId) == msg.sender, "not owner");
         require(c.isApprovedForAll(msg.sender, address(this)), "approve marketplace");
 
-        // guard: not staked
         address pool = address(0);
         if (address(factory) != address(0)) {
             pool = factory.getPool(nft);
@@ -92,12 +88,7 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
             }
         }
 
-        listings[nft][tokenId] = Listing({
-            seller: msg.sender,
-            price: price,
-            paymentToken: paymentToken,
-            active: true
-        });
+        listings[nft][tokenId] = Listing({ seller: msg.sender, price, paymentToken, active: true });
         emit Listed(nft, tokenId, msg.sender, price, paymentToken);
     }
 
@@ -115,23 +106,17 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
         require(L.paymentToken == address(0), "only KAS");
         require(msg.value == L.price, "wrong value");
 
-        // pull out listing before external calls
         delete listings[nft][tokenId];
 
-        // royalty (capped)
         (address royaltyRecv, uint256 royaltyAmtRaw) = _royalty(nft, tokenId, L.price);
         uint256 royaltyAmt = royaltyAmtRaw;
         uint256 capAmt = (L.price * royaltyCapBP) / 10_000;
         if (royaltyAmt > capAmt) royaltyAmt = capAmt;
 
-        // fees
         uint256 stakingFee = (L.price * stakingFeeBP) / 10_000;
         uint256 platformFee = (L.price * platformFeeBP) / 10_000;
-
-        // seller proceeds
         uint256 proceeds = L.price - royaltyAmt - stakingFee - platformFee;
 
-        // staking notify (if configured)
         address pool = address(0);
         if (address(factory) != address(0)) {
             pool = factory.getPool(nft);
@@ -140,24 +125,19 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
             (bool okPool, ) = payable(pool).call{value: stakingFee}(abi.encodeWithSelector(IStakingPool.notifyFee.selector, stakingFee));
             require(okPool, "pool fee fail");
         } else if (stakingFee > 0) {
-            // if no pool, send fee to treasury to avoid lock
             (bool okAlt, ) = payable(treasury).call{value: stakingFee}("");
             require(okAlt, "stake fee xfer fail");
         }
 
-        // pay royalty
         if (royaltyAmt > 0 && royaltyRecv != address(0)) {
             (bool okR, ) = payable(royaltyRecv).call{value: royaltyAmt}("");
             require(okR, "royalty xfer fail");
         }
-
-        // pay platform fee
         if (platformFee > 0) {
             (bool okP, ) = payable(treasury).call{value: platformFee}("");
             require(okP, "platform xfer fail");
         }
 
-        // transfer NFT and pay seller
         IERC721(nft).safeTransferFrom(L.seller, msg.sender, tokenId);
         (bool okS, ) = payable(L.seller).call{value: proceeds}("");
         require(okS, "seller xfer fail");

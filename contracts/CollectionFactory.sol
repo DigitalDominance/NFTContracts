@@ -10,7 +10,6 @@ contract CollectionFactory is Ownable {
     uint256 public constant DEPLOY_FEE = 5 ether; // 5 KAS (18 decimals)
     address public treasury;
 
-    // collection => pool
     mapping(address => address) public stakingPoolOf;
 
     event CollectionDeployed(
@@ -56,7 +55,6 @@ contract CollectionFactory is Ownable {
         require(maxSupply > 0, "maxSupply=0");
         require(royaltyBps <= 10_000, "royalty>100%");
 
-        // 1) Deploy collection
         NFTCollection c = new NFTCollection(
             name_,
             symbol_,
@@ -68,19 +66,15 @@ contract CollectionFactory is Ownable {
             baseURI
         );
 
-        // 2) Transfer ownership to deployer
         c.transferOwnership(msg.sender);
         addr = address(c);
 
-        // 3) Deploy per-collection staking pool (non-upgradeable)
         address pool = address(new StakingPool(addr));
         stakingPoolOf[addr] = pool;
 
-        // 4) Forward the fixed fee to treasury
         (bool ok, ) = payable(treasury).call{value: msg.value}("");
         require(ok, "fee xfer failed");
 
-        // 5) Emit event
         emit CollectionDeployed(
             addr,
             msg.sender,

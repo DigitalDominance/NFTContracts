@@ -14,14 +14,12 @@ async function main() {
   const STAKING_FEE_BP  = Number(process.env.STAKING_FEE_BP  ?? 30);
   const ROYALTY_CAP_BP  = Number(process.env.ROYALTY_CAP_BP  ?? 200);
 
-  // 1) Factory
   const Factory = await ethers.getContractFactory("CollectionFactory");
   const factory = await Factory.deploy(deployer.address, TREASURY);
   await factory.waitForDeployment();
   const factoryAddr = await factory.getAddress();
   console.log("Factory:", factoryAddr);
 
-  // 2) Marketplace (non-upgradeable for simplicity/robustness)
   const Market = await ethers.getContractFactory("Marketplace");
   const market = await Market.deploy(
     deployer.address,
@@ -34,13 +32,22 @@ async function main() {
   const marketAddr = await market.getAddress();
   console.log("Marketplace:", marketAddr);
 
-  // 3) Wire marketplace -> factory
   const tx = await market.setFactory(factoryAddr);
   await tx.wait();
-  console.log("Marketplace.factory set");
+  console.log("✓ Marketplace.factory set");
 
-  // 4) Ensure native KAS is allowed (constructor already allows address(0))
-  // Optional: if you support ERC-20 tokens, call setPaymentToken(token, true) here.
+  try {
+    const paused = await market.paused();
+    if (paused) {
+      const u = await market.unpause();
+      await u.wait();
+      console.log("✓ Marketplace unpaused");
+    } else {
+      console.log("Marketplace already unpaused");
+    }
+  } catch (e) {
+    console.log("Pause/unpause not available or failed (continuing):", e.message);
+  }
 
   console.log("\nAddresses:");
   console.log("  Factory     :", factoryAddr);
