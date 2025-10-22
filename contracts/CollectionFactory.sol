@@ -81,7 +81,7 @@ contract CollectionFactory is Ownable {
 
         emit CollectionDeployed(
             addr,
-            msg.sender,
+            msg.sender, _pool, 
             name_,
             symbol_,
             royaltyReceiver,
