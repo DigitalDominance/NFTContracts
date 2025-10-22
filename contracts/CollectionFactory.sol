@@ -56,12 +56,48 @@ contract CollectionFactory is Ownable {
         uint256 maxPerWallet,
         uint256 maxSupply,
         string calldata baseURI
-    ) external payable onlyOwner returns (address addr) {
-        require(msg.value == DEPLOY_FEE, "fee=5 KAS");
-        address _pool = address(new StakingPool(addr));
-        stakingPoolOf[addr] = _pool;
-        // forward fee to treasury
-        (bool ok, ) = payable(treasury).call{value: msg.value}("");
+    ) external payable returns (address addr) {
+
+    require(msg.value == DEPLOY_FEE, "fee=5 KAS");
+
+    NFTCollection c = new NFTCollection(
+        name_,
+        symbol_,
+        royaltyReceiver,
+        royaltyBps,
+        mintPrice,
+        maxPerWallet,
+        maxSupply,
+        baseURI
+    );
+
+    c.transferOwnership(msg.sender);
+    address addr = address(c);
+
+    address _pool = address(new StakingPool(addr));
+    stakingPoolOf[addr] = _pool;
+
+    (bool ok, ) = payable(treasury).call{value: msg.value}("");
+    require(ok, "fee xfer failed");
+
+
+emit CollectionDeployed(
+    addr,
+    msg.sender,
+    _pool,
+    name_,
+    symbol_,
+    royaltyReceiver,
+    royaltyBps,
+    mintPrice,
+    maxPerWallet,
+    maxSupply,
+    baseURI
+);
+
+    return addr;
+
+}("");
         require(ok, "fee xfer failed");
 
         NFTCollection c = new NFTCollection(
