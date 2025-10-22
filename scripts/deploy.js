@@ -1,10 +1,6 @@
-// Updated deploy.js — per-collection staking wiring
-// - No global StakingPool is deployed anymore.
-// - Marketplace is deployed (UUPS) with stakingPool = ZeroAddress (legacy arg kept for ABI compat).
-// - CollectionFactory is deployed and then set on Marketplace via setFactory(factory).
-// - Optional: shows how to deploy a sample collection and read back its pool address.
-//
-// Requires: TREASURY_MULTISIG in your .env
+// deploy.js — wires Marketplace.factory automatically
+// Uses Hardhat + @openzeppelin/hardhat-upgrades with ethers v6.
+// Make sure you've run: npm i --save-dev @openzeppelin/hardhat-upgrades @nomicfoundation/hardhat-ethers ethers
 
 const { ethers, upgrades } = require("hardhat");
 require("dotenv").config();
@@ -13,24 +9,30 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   console.log("Deployer:", deployer.address);
 
-  const treasuryAddress = process.env.TREASURY_MULTISIG;
-  if (!treasuryAddress) throw new Error("TREASURY_MULTISIG required");
+  // ==== ENV / CONFIG ====
+  const TREASURY = process.env.TREASURY_MULTISIG || deployer.address;
+  const PLATFORM_FEE_BP = Number(process.env.PLATFORM_FEE_BP || 20);   // 0.20% example
+  const STAKING_FEE_BP  = Number(process.env.STAKING_FEE_BP  || 30);   // 0.30% example
+  const ROYALTY_CAP_BP  = Number(process.env.ROYALTY_CAP_BP  || 20);  // 0.2% cap example
 
-  // ---- Marketplace (UUPS proxy) ----
-  const platformFeeBP = 20;   // 0.20% (example: set your real values)
-  const stakingFeeBP  = 30;   // 0.30%
-  const royaltyCapBP  = 20;  // 0.20% cap
+  // ==== 1) Deploy CollectionFactory (owner = deployer, treasury = TREASURY) ====
+  const Factory = await ethers.getContractFactory("CollectionFactory");
+  const factory = await Factory.deploy(deployer.address, TREASURY);
+  await factory.waitForDeployment();
+  const factoryAddr = await factory.getAddress();
+  console.log("CollectionFactory:", factoryAddr);
 
+  // ==== 2) Deploy Marketplace (UUPS) ====
   const Marketplace = await ethers.getContractFactory("Marketplace");
   const marketplace = await upgrades.deployProxy(
     Marketplace,
     [
-      deployer.address,             // owner
-      treasuryAddress,              // treasury
-      ethers.ZeroAddress,           // stakingPool (legacy, unused now; per-collection pools)
-      platformFeeBP,
-      stakingFeeBP,
-      royaltyCapBP
+      deployer.address,         // owner
+      TREASURY,                 // treasury
+      ethers.ZeroAddress,       // stakingPool (legacy placeholder; per-collection pools are used)
+      PLATFORM_FEE_BP,          // platform fee bp
+      STAKING_FEE_BP,           // staking fee bp
+      ROYALTY_CAP_BP            // royalty cap bp
     ],
     { kind: "uups", initializer: "initialize" }
   );
@@ -38,79 +40,55 @@ async function main() {
   const marketplaceAddr = await marketplace.getAddress();
   console.log("Marketplace (proxy):", marketplaceAddr);
 
-  // ---- Treasury (optional helper/vault; keep if used by your app) ----
-  // If your app already uses a separate Treasury contract, leave this in.
-  // Otherwise you can remove this section.
-  let treasuryContractAddr = null;
-  try {
-    const Treasury = await ethers.getContractFactory("Treasury");
-    const treasury = await Treasury.deploy(treasuryAddress);
-    await treasury.waitForDeployment();
-    treasuryContractAddr = await treasury.getAddress();
-    console.log("Treasury:", treasuryContractAddr);
-  } catch (e) {
-    console.log("Treasury deployment skipped or contract not present:", e.message);
+  // ==== 3) Wire Marketplace → Factory (this is what makes per-collection pools active) ====
+  const tx = await marketplace.setFactory(factoryAddr); // onlyOwner
+  await tx.wait();
+  console.log("Marketplace.factory set to:", factoryAddr);
+
+  // ---- (Optional) Smoke deploy a collection to prove wiring works ----
+  if (process.env.DEPLOY_SAMPLE === "1") {
+    const name = process.env.SAMPLE_NAME || "Demo Collection";
+    const symbol = process.env.SAMPLE_SYMBOL || "DEMO";
+    const baseURI = process.env.SAMPLE_BASE_URI || "ipfs://CID/";
+    const royaltyReceiver = process.env.SAMPLE_ROYALTY_RECEIVER || deployer.address;
+    const royaltyBps = Number(process.env.SAMPLE_ROYALTY_BPS || 200);
+    const mintPrice = ethers.parseEther(process.env.SAMPLE_MINT_PRICE || "0.001");
+    const maxPerWallet = Number(process.env.SAMPLE_MAX_PER_WALLET || 5);
+    const maxSupply = Number(process.env.SAMPLE_MAX_SUPPLY || 1000);
+    const DEPLOY_FEE = ethers.parseEther("5"); // factory enforces exactly 5 KAS
+
+    const dtx = await factory.deployCollection(
+      name,
+      symbol,
+      baseURI,
+      royaltyReceiver,
+      royaltyBps,
+      mintPrice,
+      maxPerWallet,
+      maxSupply,
+      { value: DEPLOY_FEE }
+    );
+    const rcpt = await dtx.wait();
+
+    let collectionAddr = null, poolAddr = null;
+    for (const log of rcpt.logs) {
+      try {
+        const parsed = factory.interface.parseLog(log);
+        if (parsed.name === "CollectionDeployed") {
+          collectionAddr = parsed.args.collection;
+          poolAddr = parsed.args.stakingPool;
+        }
+      } catch {}
+    }
+    console.log("Sample collection:", collectionAddr);
+    console.log("Sample staking pool:", poolAddr);
   }
 
-  // ---- CollectionFactory (deploys collection + a dedicated pool per collection) ----
-  const Factory = await ethers.getContractFactory("CollectionFactory");
-  // Your constructor previously took (owner, treasury). Keep same order.
-  const factory = await Factory.deploy(deployer.address, treasuryAddress);
-  await factory.waitForDeployment();
-  const factoryAddr = await factory.getAddress();
-  console.log("CollectionFactory:", factoryAddr);
-
-  // ---- Wire factory to marketplace (enables per-collection pools) ----
-  const tx = await marketplace.setFactory(factoryAddr);
-  await tx.wait();
-  console.log("Marketplace.factory set ->", factoryAddr);
-
-  // ---- (Optional) Sanity: deploy one sample collection + pool, then read the pool ----
-  // NOTE: Keep/adjust this section for CI smoke tests, or comment it out in production.
-  // const name = "Demo Collection";
-  // const symbol = "DEMO";
-  // const baseURI = "ipfs://CID/";
-  // const royaltyReceiver = deployer.address;
-  // const royaltyBps = 200;              // 2.00% default royalty (capped by marketplace)
-  // const mintPrice = ethers.parseEther("0.001"); // KAS
-  // const maxPerWallet = 5;
-  // const maxSupply = 1000;
-  //
-  // // Remember: your factory enforces an exact 5 KAS deploy fee.
-  // const DEPLOY_FEE = ethers.parseEther("5");
-  // const deployTx = await factory.deployCollection(
-  //   name,
-  //   symbol,
-  //   baseURI,
-  //   royaltyReceiver,
-  //   royaltyBps,
-  //   mintPrice,
-  //   maxPerWallet,
-  //   maxSupply,
-  //   { value: DEPLOY_FEE }
-  // );
-  // const receipt = await deployTx.wait();
-  // let collectionAddr = null, poolAddr = null;
-  // for (const log of receipt.logs) {
-  //   try {
-  //     const parsed = factory.interface.parseLog(log);
-  //     if (parsed && parsed.name === "CollectionDeployed") {
-  //       collectionAddr = parsed.args.collection;
-  //       poolAddr = parsed.args.stakingPool;
-  //     }
-  //   } catch (_) {}
-  // }
-  // console.log("Deployed collection:", collectionAddr);
-  // console.log("Its staking pool:", poolAddr);
-  //
-  // // (Optional) Marketplace sanity: ensure listing guard calls into the correct pool
-  // // and buy() routes stakingFee to that same pool (handled inside Marketplace).
-
-  console.log("\nDONE");
+  console.log("\nAll set.");
   console.log("Addresses:");
-  console.log("  Marketplace:", marketplaceAddr);
-  console.log("  Factory    :", factoryAddr);
-  if (treasuryContractAddr) console.log("  Treasury   :", treasuryContractAddr);
+  console.log("  Factory     :", factoryAddr);
+  console.log("  Marketplace :", marketplaceAddr);
+  console.log("  Treasury    :", TREASURY);
 }
 
 main().catch((e) => {
