@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -55,40 +54,53 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
         platformFeeBP = platformFeeBP_;
         stakingFeeBP = stakingFeeBP_;
         royaltyCapBP = royaltyCapBP_;
-        allowedPaymentToken[address(0)] = true;
+        allowedPaymentToken[address(0)] = true; // allow native KAS
     }
 
     function setFactory(address _factory) external onlyOwner {
         factory = IFactory(_factory);
     }
+
     function setPaymentToken(address token, bool allowed) external onlyOwner {
         allowedPaymentToken[token] = allowed;
     }
+
     function setFees(uint256 platformBP, uint256 stakingBP, uint256 royaltyCapBP_) external onlyOwner {
         require(platformBP <= 10_000 && stakingBP <= 10_000 && royaltyCapBP_ <= 10_000, "bp>100%");
         platformFeeBP = platformBP;
         stakingFeeBP = stakingBP;
         royaltyCapBP = royaltyCapBP_;
     }
+
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
-    function list(address nft, uint256 tokenId, uint256 price, address paymentToken) external whenNotPaused nonReentrant {
+    function list(address nft, uint256 tokenId, uint256 price, address paymentToken)
+        external
+        whenNotPaused
+        nonReentrant
+    {
         require(price > 0, "price=0");
         require(allowedPaymentToken[paymentToken], "payment not allowed");
+
         IERC721 c = IERC721(nft);
         require(c.ownerOf(tokenId) == msg.sender, "not owner");
         require(c.isApprovedForAll(msg.sender, address(this)), "approve marketplace");
 
-        address pool = address(0);
+        // block listing if staked
         if (address(factory) != address(0)) {
-            pool = factory.getPool(nft);
+            address pool = factory.getPool(nft);
             if (pool != address(0)) {
                 require(!IStakingPool(pool).isStaked(tokenId), "staked");
             }
         }
 
-        listings[nft][tokenId] = Listing({ seller: msg.sender, price, paymentToken, active: true });
+        listings[nft][tokenId] = Listing({
+            seller: msg.sender,
+            price: price,
+            paymentToken: paymentToken,
+            active: true
+        });
         emit Listed(nft, tokenId, msg.sender, price, paymentToken);
     }
 
@@ -117,18 +129,22 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
         uint256 platformFee = (L.price * platformFeeBP) / 10_000;
         uint256 proceeds = L.price - royaltyAmt - stakingFee - platformFee;
 
+        // Route staking fee
         address pool = address(0);
         if (address(factory) != address(0)) {
             pool = factory.getPool(nft);
         }
         if (pool != address(0) && stakingFee > 0) {
-            (bool okPool, ) = payable(pool).call{value: stakingFee}(abi.encodeWithSelector(IStakingPool.notifyFee.selector, stakingFee));
+            (bool okPool, ) = payable(pool).call{value: stakingFee}(
+                abi.encodeWithSelector(IStakingPool.notifyFee.selector, stakingFee)
+            );
             require(okPool, "pool fee fail");
         } else if (stakingFee > 0) {
             (bool okAlt, ) = payable(treasury).call{value: stakingFee}("");
             require(okAlt, "stake fee xfer fail");
         }
 
+        // Royalties + platform fee
         if (royaltyAmt > 0 && royaltyRecv != address(0)) {
             (bool okR, ) = payable(royaltyRecv).call{value: royaltyAmt}("");
             require(okR, "royalty xfer fail");
@@ -138,11 +154,16 @@ contract Marketplace is Ownable, Pausable, ReentrancyGuard {
             require(okP, "platform xfer fail");
         }
 
+        // Transfer NFT and pay seller
         IERC721(nft).safeTransferFrom(L.seller, msg.sender, tokenId);
         (bool okS, ) = payable(L.seller).call{value: proceeds}("");
         require(okS, "seller xfer fail");
 
-        emit Bought(nft, tokenId, msg.sender, L.seller, L.price, L.paymentToken, royaltyAmt, stakingFee, platformFee);
+        emit Bought(
+            nft, tokenId, msg.sender,
+            L.seller, L.price, L.paymentToken,
+            royaltyAmt, stakingFee, platformFee
+        );
     }
 
     function _royalty(address nft, uint256 tokenId, uint256 price) internal view returns (address, uint256) {
