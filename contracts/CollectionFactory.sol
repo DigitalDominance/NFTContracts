@@ -47,8 +47,7 @@ contract CollectionFactory is Ownable {
      * @param maxSupply       Total supply cap (e.g., number of images)
      * @param baseURI         Base URI prefix (e.g., https://.../ or ipfs://.../)
      */
-    
-function deployCollection(
+    function deployCollection(
         string calldata name_,
         string calldata symbol_,
         address royaltyReceiver,
@@ -57,51 +56,12 @@ function deployCollection(
         uint256 maxPerWallet,
         uint256 maxSupply,
         string calldata baseURI
-    ) external payable returns (address addr) {
+    ) external payable onlyOwner returns (address addr) {
         require(msg.value == DEPLOY_FEE, "fee=5 KAS");
-
-        // 1) Deploy collection
-        NFTCollection c = new NFTCollection(
-            name_,
-            symbol_,
-            royaltyReceiver,
-            royaltyBps,
-            mintPrice,
-            maxPerWallet,
-            maxSupply,
-            baseURI
-        );
-
-        // 2) Transfer ownership of the collection to the deployer
-        c.transferOwnership(msg.sender);
-        addr = address(c);
-
-        // 3) Deploy per-collection staking pool
         address _pool = address(new StakingPool(addr));
         stakingPoolOf[addr] = _pool;
-
-        // 4) Forward exact fee to treasury
+        // forward fee to treasury
         (bool ok, ) = payable(treasury).call{value: msg.value}("");
-        require(ok, "fee xfer failed");
-
-        // 5) Emit full event (with stakingPool)
-        emit CollectionDeployed(
-            addr,
-            msg.sender,
-            _pool,
-            name_,
-            symbol_,
-            royaltyReceiver,
-            royaltyBps,
-            mintPrice,
-            maxPerWallet,
-            maxSupply,
-            baseURI
-        );
-
-        return addr;
-}
-("");
         require(ok, "fee xfer failed");
 
         NFTCollection c = new NFTCollection(
