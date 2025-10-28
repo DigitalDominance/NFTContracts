@@ -12,7 +12,7 @@ async function main() {
   const TREASURY = process.env.TREASURY_MULTISIG || deployer.address;
   const PLATFORM_FEE_BP = Number(process.env.PLATFORM_FEE_BP ?? 20);
   const STAKING_FEE_BP  = Number(process.env.STAKING_FEE_BP  ?? 30);
-  const ROYALTY_CAP_BP  = Number(process.env.ROYALTY_CAP_BP  ?? 200);
+  const ROYALTY_CAP_BP  = Number(process.env.ROYALTY_CAP_BP  ?? 500);
 
   const Factory = await ethers.getContractFactory("CollectionFactory");
   const factory = await Factory.deploy(deployer.address, TREASURY);
