@@ -4,8 +4,8 @@ import "@openzeppelin/hardhat-upgrades";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-const rpcUrl = process.env.KASPLEX_RPC_URL || "https://evmrpc.kasplex.org";
-const chainId = Number(process.env.KASPLEX_CHAIN_ID || 202555);
+const rpcUrl = process.env.KASPLEX_RPC_URL || "https://caravel.igralabs.com:8545";
+const chainId = Number(process.env.KASPLEX_CHAIN_ID || 19416);
 const pk = process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [];
 const gasPriceGwei = Number(process.env.GAS_PRICE_GWEI || 2000);
 
