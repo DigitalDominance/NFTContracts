@@ -1,4 +1,4 @@
-# Kasplex NFT Marketplace Contracts (Testnet)
+# IGRA NFT Marketplace Contracts (Testnet)
 
 Upgradeable, secure ERC-721 marketplace + staking pool + factory with fee splits and ERC-2981 royalty cap — tailored for **Kasplex Network Testnet**.
 
@@ -24,7 +24,7 @@ cp .env.example .env
 npm run build
 ```
 
-## Deploy (Kasplex Testnet)
+## Deploy (IGRA Testnet)
 ```bash
 npm run deploy:kasplextest
 ```
