@@ -3,10 +3,10 @@
 Upgradeable, secure ERC-721 marketplace + staking pool + factory with fee splits and ERC-2981 royalty cap — tailored for **Kasplex Network Testnet**.
 
 **Network**
-- Name: Kasplex Network Testnet
-- RPC: `https://rpc.kasplextest.xyz`
-- Chain ID: `167012`
-- Native Token: Bridged Kas (symbol: KAS), 18 decimals
+- Name: Igra Caravel
+- RPC: `(https://caravel.igralabs.com:8545)`
+- Chain ID: `19416`
+- Native Token: iKas (symbol: iKAS), 18 decimals
 - Gas Price/Basefee: 2000 GWEI
 
 ## Modules
